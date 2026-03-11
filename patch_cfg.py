@@ -1,13 +1,12 @@
 """
 XILab .cfg Patcher
 ==================
-Патчит .cfg файлы профилей под новую версию протокола XILab без запуска GUI.
+Патчит .cfg файлы профилей под новую версию протокола XILab\mDrive без запуска GUI.
 
 Как работает:
-  1. Парсит motorsettings.cpp и stagesettings.cpp из репозитория XILab
-  2. Извлекает все ключи которые XILab пишет при сохранении (setValue + SAVE_KEY)
+  1. Парсит motorsettings.cpp и stagesettings.cpp из репозитория XILab\mDrive
+  2. Извлекает все ключи которые XILab\mDrive пишет при сохранении (setValue + SAVE_KEY)
   3. Для каждого .cfg файла добавляет отсутствующие ключи с дефолтными значениями
-  4. Пересчитывает MD5 хэш в секции [VERIFICATION]
 
 При обновлении протокола достаточно указать путь до обновлённого репозитория —
 скрипт сам найдёт новые ключи.
@@ -15,7 +14,7 @@ XILab .cfg Patcher
 Зависимости: только стандартная библиотека Python (3.6+)
 
 Использование:
-  python xilab_patch_cfg.py
+  python patch_cfg.py
 """
 
 import os
@@ -148,7 +147,7 @@ def build_expected_keys(libximc_src_dir: str) -> dict:
     for filename in files_to_parse:
         filepath = os.path.join(libximc_src_dir, filename)
         if not os.path.isfile(filepath):
-            print(f"  ⚠ Файл не найден, пропускаем: {filepath}")
+            print(f"Файл не найден, пропускаем: {filepath}")
             continue
 
         parsed = parse_keys_from_source(filepath)
@@ -156,7 +155,7 @@ def build_expected_keys(libximc_src_dir: str) -> dict:
             if section not in expected:
                 expected[section] = {}
             expected[section].update(keys)
-        print(f"  ✓ Прочитан {filename}: секций={len(parsed)}, "
+        print(f"Прочитан {filename}: секций={len(parsed)}, "
               f"ключей={sum(len(v) for v in parsed.values())}")
 
     return expected
@@ -194,7 +193,7 @@ def patch_cfg(filepath: str, expected_keys: dict):
 
     if added:
         # Сохраняем файл. VERIFICATION не трогаем —
-        # хэш станет невалидным, это сигнал что файл нужно верифицировать вручную через XILab.
+        # хэш станет невалидным, это сигнал что файл нужно верифицировать вручную через XILab\mDrive.
         with open(filepath, 'w', encoding='utf-8') as f:
             config.write(f, space_around_delimiters=False)
 
@@ -213,21 +212,21 @@ def find_src_dir(xilab_repo: str) -> str:
 
 
 def process(xilab_repo: str, cfg_folder: str):
-    print(f"\nЧитаем исходники XILab из: {xilab_repo}")
+    print(f"\nЧитаем исходники из: {xilab_repo}")
     src_dir = find_src_dir(xilab_repo)
     expected_keys = build_expected_keys(src_dir)
 
     if not expected_keys:
-        print("✗ Не удалось прочитать ключи из исходников!")
+        print("Не удалось прочитать ключи из исходников!")
         sys.exit(1)
 
     total_sections = len(expected_keys)
     total_keys = sum(len(v) for v in expected_keys.values())
-    print(f"  Итого: секций={total_sections}, ключей={total_keys}")
+    print(f"Итого: секций={total_sections}, ключей={total_keys}")
 
     cfg_files = sorted(glob.glob(os.path.join(cfg_folder, "*.cfg")))
     if not cfg_files:
-        print(f"\n✗ В папке '{cfg_folder}' не найдено .cfg файлов!")
+        print(f"\nВ папке '{cfg_folder}' не найдено .cfg файлов!")
         return
 
     print(f"\nНайдено .cfg файлов: {len(cfg_files)}\n")
@@ -240,14 +239,14 @@ def process(xilab_repo: str, cfg_folder: str):
         try:
             added = patch_cfg(cfg_path, expected_keys)
             if added:
-                print(f"  ✓ {name} — добавлено ключей: {len(added)}")
+                print(f"{name} - добавлено ключей: {len(added)}")
                 for k in added:
                     print(f"      + {k}")
                 total_added += len(added)
             else:
                 print(f"  · {name} — актуален")
         except Exception as e:
-            print(f"  ✗ {name} — ошибка: {e}")
+            print(f"{name} — ошибка: {e}")
             errors += 1
 
     print(f"\n{'='*50}")
@@ -260,18 +259,18 @@ def process(xilab_repo: str, cfg_folder: str):
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("  XILab .cfg Patcher (автопарсинг исходников)")
+    print("  XILab\mDrive .cfg Patcher (автопарсинг исходников)")
     print("=" * 50)
     print()
 
-    xilab_repo = input("Путь до репозитория XILab (корень или папка src/, любой вариант):\n  пример: F:\\crzy\\GITLAB\\XILab-dev-2.0\n> ").strip().strip('"')
+    xilab_repo = input("Путь до репозитория XILab\mDrive (корень или папка src/, любой вариант):\n  пример: F:\\crzy\\GITLAB\\XILab\n> ").strip().strip('"')
     if not os.path.isdir(xilab_repo):
-        print(f"✗ Папка не найдена: {xilab_repo}")
+        print(f"Папка не найдена: {xilab_repo}")
         sys.exit(1)
 
-    cfg_folder = input("\nПуть до папки с .cfg файлами:\n  пример: F:\\crzy\\GITLAB\\xiresource\\profiles\\Beijing PDV Instrument\n> ").strip().strip('"')
+    cfg_folder = input("\nПуть до папки с .cfg файлами:\n  пример: F:\\crzy\\GITLAB\\xiresource\\profiles\\STANDA\n> ").strip().strip('"')
     if not os.path.isdir(cfg_folder):
-        print(f"✗ Папка не найдена: {cfg_folder}")
+        print(f"Папка не найдена: {cfg_folder}")
         sys.exit(1)
 
     process(xilab_repo, cfg_folder)
