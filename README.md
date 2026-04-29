@@ -29,8 +29,13 @@
 
 ## Использование
 
+Без пересчета хэш
 ```bash
-python xilab_patch_cfg.py
+python patch_cfg.py 
+```
+С сохранением хэша
+```bash
+python patch_cfg.py --rehash
 ```
 
 Скрипт спросит путь до папки с `.cfg` файлами, например:
