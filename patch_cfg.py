@@ -7,7 +7,9 @@ XILab .cfg Patcher
   1. Парсит motorsettings.cpp и stagesettings.cpp из репозитория XILab\mDrive
   2. Извлекает все ключи которые XILab\mDrive пишет при сохранении (setValue + SAVE_KEY)
   3. Для каждого .cfg файла добавляет отсутствующие ключи с дефолтными значениями
-  4. Опционально пересчитывает MD5 хэш в секции [VERIFICATION] (флаг --rehash)
+  4. Если файл был верифицирован до патча — хэш пересчитывается, статус сохраняется.
+     Если файл был намеренно невалидным — хэш не трогается.
+     Флаг --rehash форсирует пересчёт хэша для всех файлов включая невалидные.
 
 При обновлении протокола достаточно указать путь до обновлённого репозитория —
 скрипт сам найдёт новые ключи.
@@ -15,8 +17,8 @@ XILab .cfg Patcher
 Зависимости: только стандартная библиотека Python (3.6+)
 
 Использование:
-  python patch_cfg.py               # без пересчёта хэша
-  python patch_cfg.py --rehash      # с пересчётом хэша (как делает XILab)
+  python patch_cfg.py               # сохраняет статус верификации каждого файла
+  python patch_cfg.py --rehash      # форсирует пересчёт хэша для всех файлов
 """
 
 import os
@@ -25,6 +27,7 @@ import re
 import glob
 import hashlib
 import configparser
+from typing import Optional
 
 
 # ── Парсер motorsettings.cpp / stagesettings.cpp ──────────────────────────────
@@ -193,10 +196,33 @@ def compute_cfg_hash(filepath: str) -> str:
     return md5
 
 
-def update_verification(filepath: str):
+def get_stored_hash(filepath: str) -> Optional[str]:
+    """
+    Извлекает хэш из секции [VERIFICATION] файла.
+    Возвращает строку хэша или None если секции/ключа нет.
+    """
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+
+    m = re.search(r'\[VERIFICATION\].*?hash\s*=\s*([0-9a-fA-F]+)', text,
+                  re.IGNORECASE | re.DOTALL)
+    return m.group(1).lower() if m else None
+
+
+def is_verified(filepath: str) -> bool:
+    """
+    Проверяет верифицирован ли файл: хэш в [VERIFICATION] совпадает с реальным.
+    Если секции или ключа нет — считаем файл не верифицированным.
+    """
+    stored = get_stored_hash(filepath)
+    if stored is None:
+        return False
+    return stored == compute_cfg_hash(filepath)
+
+
+def update_verification(filepath: str) -> str:
     """
     Пересчитывает MD5 хэш файла и обновляет (или создаёт) секцию [VERIFICATION].
-    Формат секции берётся из существующего файла если возможно, иначе создаётся новая.
     Возвращает новый хэш.
     """
     new_hash = compute_cfg_hash(filepath)
@@ -204,9 +230,7 @@ def update_verification(filepath: str):
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         text = f.read()
 
-    # Обновляем существующий ключ хэша если он есть
     if re.search(r'\[VERIFICATION\]', text, re.IGNORECASE):
-        # Заменяем значение существующего ключа хэша (любое имя ключа со значением — hex строка)
         new_text = re.sub(
             r'(\[VERIFICATION\].*?hash\s*=\s*)[0-9a-fA-F]+',
             lambda m: m.group(1) + new_hash,
@@ -242,34 +266,48 @@ class CaseSensitiveConfigParser(configparser.RawConfigParser):
 def patch_cfg(filepath: str, expected_keys: dict, rehash: bool = False):
     """
     Патчит один .cfg файл.
-    Возвращает (список добавленных ключей, новый хэш или None).
+
+    Логика хэша:
+      - Если файл верифицирован до патча → пересчитываем хэш после, статус сохраняется.
+      - Если файл не верифицирован → хэш не трогаем, статус сохраняется.
+      - --rehash → пересчитываем хэш для всех файлов независимо от статуса.
+
+    Возвращает (список добавленных ключей, статус хэша: 'updated' | 'forced' | 'skipped' | None).
     """
+    # Проверяем статус верификации ДО изменений
+    was_verified = is_verified(filepath)
+
     config = CaseSensitiveConfigParser()
     config.read(filepath, encoding='utf-8')
 
     added = []
-
     for section, keys in expected_keys.items():
         if not config.has_section(section):
             config.add_section(section)
-
         for key, default in keys.items():
             if not config.has_option(section, key):
                 config.set(section, key, default)
                 added.append(f"[{section}] {key} = {default}")
 
-    new_hash = None
-
     if added:
         with open(filepath, 'w', encoding='utf-8') as f:
             config.write(f, space_around_delimiters=False)
 
-    if rehash:
-        # Пересчитываем хэш независимо от того, были ли добавлены ключи —
-        # файл мог быть изменён вручную до запуска скрипта.
-        new_hash = update_verification(filepath)
+    hash_status = None
 
-    return added, new_hash
+    if rehash:
+        # Форсируем пересчёт для всех файлов
+        update_verification(filepath)
+        hash_status = 'forced'
+    elif was_verified and added:
+        # Файл был верифицирован — восстанавливаем верификацию после патча
+        update_verification(filepath)
+        hash_status = 'updated'
+    elif not was_verified and added:
+        # Файл был невалидным — оставляем хэш нетронутым
+        hash_status = 'skipped'
+
+    return added, hash_status
 
 
 # ── Главная функция ────────────────────────────────────────────────────────────
@@ -297,7 +335,9 @@ def process(xilab_repo: str, cfg_folder: str, rehash: bool):
     print(f"Итого: секций={total_sections}, ключей={total_keys}")
 
     if rehash:
-        print("Режим: пересчёт хэша [VERIFICATION] включён")
+        print("Режим: --rehash, хэш пересчитывается для всех файлов")
+    else:
+        print("Режим: хэш верифицированных файлов сохраняется, невалидных — не трогается")
 
     cfg_files = sorted(glob.glob(os.path.join(cfg_folder, "*.cfg")))
     if not cfg_files:
@@ -307,13 +347,13 @@ def process(xilab_repo: str, cfg_folder: str, rehash: bool):
     print(f"\nНайдено .cfg файлов: {len(cfg_files)}\n")
 
     total_added = 0
-    total_rehashed = 0
     errors = 0
 
     for cfg_path in cfg_files:
         name = os.path.basename(cfg_path)
         try:
-            added, new_hash = patch_cfg(cfg_path, expected_keys, rehash=rehash)
+            added, hash_status = patch_cfg(cfg_path, expected_keys, rehash=rehash)
+
             if added:
                 print(f"  ✓ {name} — добавлено ключей: {len(added)}")
                 for k in added:
@@ -322,9 +362,12 @@ def process(xilab_repo: str, cfg_folder: str, rehash: bool):
             else:
                 print(f"  · {name} — актуален")
 
-            if new_hash:
-                print(f"      # hash = {new_hash}")
-                total_rehashed += 1
+            if hash_status == 'updated':
+                print(f"      # хэш пересчитан (файл был верифицирован)")
+            elif hash_status == 'skipped':
+                print(f"      # хэш не тронут (файл не верифицирован)")
+            elif hash_status == 'forced':
+                print(f"      # хэш пересчитан (--rehash)")
 
         except Exception as e:
             print(f"  ✗ {name} — ошибка: {e}")
@@ -333,8 +376,6 @@ def process(xilab_repo: str, cfg_folder: str, rehash: bool):
     print(f"\n{'='*50}")
     print(f"Готово! Обработано файлов: {len(cfg_files) - errors}")
     print(f"Добавлено ключей всего:   {total_added}")
-    if rehash:
-        print(f"Хэш пересчитан в файлах: {total_rehashed}")
     if errors:
         print(f"Ошибок:                   {errors}")
     print(f"{'='*50}")
@@ -347,7 +388,9 @@ if __name__ == "__main__":
     print("  XILab\\mDrive .cfg Patcher (автопарсинг исходников)")
     print("=" * 50)
     if rehash:
-        print("  [--rehash] хэш VERIFICATION будет пересчитан")
+        print("  [--rehash] хэш пересчитывается для всех файлов")
+    else:
+        print("  Статус верификации каждого файла сохраняется автоматически")
     print()
 
     xilab_repo = input("Путь до репозитория XILab\\mDrive (корень или папка src/, любой вариант):\n  пример: F:\\crzy\\GITLAB\\XILab\n> ").strip().strip('"')
