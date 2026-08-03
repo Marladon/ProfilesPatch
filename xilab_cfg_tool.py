@@ -14,7 +14,6 @@ import re
 import sys
 import glob
 import hashlib
-import configparser
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext
@@ -116,12 +115,17 @@ def build_expected_keys(xilab_repo, log):
 
 # ── Верификация ───────────────────────────────────────────────────────────────
 
+# Точно такой же regex как VERIFICATION_GROUP_REG_EXP в settingsdlg.cpp XILab
+_VERIFICATION_HASH_RE = re.compile(
+    r'\n\[VERIFICATION\]\ndate=\d{4}-\d{2}-\d{2}\nhash=\w+\n'
+)
+
 def compute_cfg_hash(filepath):
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         text = f.read()
-    text = re.sub(r'\[VERIFICATION\][^\[]*', '', text, flags=re.IGNORECASE)
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-    return hashlib.md5(text.encode('utf-8')).hexdigest()
+    text_no_ver = _VERIFICATION_HASH_RE.sub('', text)
+    return hashlib.md5(text_no_ver.encode('utf-8')).hexdigest()
 
 
 def get_stored_hash(filepath):
@@ -155,27 +159,64 @@ def update_verification(filepath):
 
 # ── Patch ─────────────────────────────────────────────────────────────────────
 
-class CaseSensitiveConfigParser(configparser.RawConfigParser):
-    def optionxform(self, s): return s
-
-
 def patch_cfg(filepath, expected_keys, rehash=False):
+    """
+    Патчит .cfg файл как текст — без переформатирования.
+    Недостающие ключи дописываются в конец нужной секции.
+    Структура файла (пустые строки, порядок) сохраняется байт-в-байт.
+    """
     was_verified = is_verified(filepath)
-    config = CaseSensitiveConfigParser()
-    config.read(filepath, encoding='utf-8')
+
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+
+    # Определяем какие ключи уже есть в каждой секции
+    existing = {}
+    current = None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r'^\[([^\]]+)\]$', s)
+        if m:
+            current = m.group(1)
+            existing.setdefault(current, set())
+        elif current and '=' in s:
+            existing[current].add(s.split('=', 1)[0].strip())
 
     added = []
     for section, keys in expected_keys.items():
-        if not config.has_section(section):
-            config.add_section(section)
-        for key, default in keys.items():
-            if not config.has_option(section, key):
-                config.set(section, key, default)
-                added.append(f"[{section}] {key} = {default}")
+        missing = {k: v for k, v in keys.items()
+                   if k not in existing.get(section, set())}
+        if not missing:
+            continue
+
+        new_lines = ''.join(k + '=' + v + '\n' for k, v in missing.items())
+
+        if section in existing:
+            # Находим конец секции — начало следующей или конец файла
+            # и вставляем новые ключи перед ним
+            section_re = re.compile(
+                r'(\[' + re.escape(section) + r'\][^\[]*?)(\n\[|\Z)',
+                re.DOTALL
+            )
+            def make_inserter(lines):
+                def inserter(m):
+                    body = m.group(1).rstrip('\n')
+                    tail = m.group(2)
+                    sep = '\n' if tail == '\n[' else ''
+                    return body + '\n' + lines + sep + tail
+                return inserter
+            text, n = section_re.subn(make_inserter(new_lines), text, count=1)
+            if n == 0:
+                continue
+        else:
+            text = text.rstrip('\n') + '\n\n[' + section + ']\n' + new_lines
+
+        for k, v in missing.items():
+            added.append('[' + section + '] ' + k + ' = ' + v)
 
     if added:
         with open(filepath, 'w', encoding='utf-8') as f:
-            config.write(f, space_around_delimiters=False)
+            f.write(text)
 
     hash_status = None
     if rehash:
